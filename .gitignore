@@ -1,0 +1,28 @@
+# Données : jamais dans Git (trop lourdes, téléchargeables depuis Kaggle)
+data/**
+!data/**/
+!data/**/.gitkeep
+
+# Sorties générées
+reports/**
+!reports/.gitkeep
+checkpoints/
+spark-warehouse/
+metastore_db/
+derby.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Secrets (identifiants Kaggle, mots de passe…)
+.env
+kaggle.json
+
+# Éditeurs / OS
+.vscode/
+.idea/
+.DS_Store
