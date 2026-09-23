@@ -11,3 +11,29 @@ Réentraînement orchestré par Airflow, cycle de vie des modèles géré par ML
 ## Statut
 
 🚧 Semaine 1 : fondations (environnement, ingestion, exploration).
+
+## Démarrage rapide
+
+Prérequis : Docker Desktop (WSL2 sous Windows), une clé API Kaggle dans `~/.kaggle/kaggle.json`.
+
+```bash
+# 1. Télécharger les données (~4,3 Go, une seule fois)
+bash scripts/download_data.sh
+
+# 2. Adapter les ressources Spark à sa machine
+cp .env.example .env
+
+# 3. Construire l'image et démarrer le cluster Spark
+docker compose build
+docker compose up -d
+
+# 4. Vérifier que tout fonctionne (compte les 42 M d'événements d'octobre)
+docker compose exec spark-client spark-submit spark_jobs/smoke_test.py data/raw/2019-Oct.csv
+```
+
+| Interface | Adresse |
+|---|---|
+| Spark master | http://localhost:8090 |
+| Spark worker | http://localhost:8081 |
+| Job Spark en cours | http://localhost:4040 |
+| JupyterLab | http://localhost:8888 |

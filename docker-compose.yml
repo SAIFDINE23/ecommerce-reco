@@ -1,0 +1,66 @@
+# Étape 3 : cluster Spark (1 master + 1 worker) + un conteneur client (Jupyter / spark-submit).
+# Kafka, Airflow, MLflow, Redis et l'API seront ajoutés dans les étapes suivantes.
+# Les tailles mémoire/CPU viennent du fichier .env (voir .env.example).
+
+x-spark-common: &spark-common
+  build:
+    context: .
+    dockerfile: docker/spark/Dockerfile
+  image: ecommerce-reco/spark:3.5.3
+  volumes:
+    # Le projet est monté au même chemin dans TOUS les conteneurs :
+    # driver et executors lisent/écrivent les mêmes fichiers (data/raw, data/lake...).
+    - ./:/opt/project
+  networks: [reco]
+
+services:
+  spark-master:
+    <<: *spark-common
+    container_name: spark-master
+    hostname: spark-master
+    command: spark-class org.apache.spark.deploy.master.Master --host spark-master --port 7077 --webui-port 8080
+    ports:
+      - "8090:8080"   # UI du master : http://localhost:8090 (8080 sera pris par Airflow)
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  spark-worker:
+    <<: *spark-common
+    container_name: spark-worker
+    hostname: spark-worker
+    command: >
+      spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+      --cores ${SPARK_WORKER_CORES:-2} --memory ${SPARK_WORKER_MEMORY:-3g} --webui-port 8081
+    ports:
+      - "8081:8081"   # UI du worker : http://localhost:8081
+    depends_on:
+      spark-master:
+        condition: service_healthy
+
+  spark-client:
+    <<: *spark-common
+    container_name: spark-client
+    hostname: spark-client
+    environment:
+      MASTER: spark://spark-master:7077          # lu par spark-submit et par PySpark
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_DRIVER_MEMORY: ${SPARK_DRIVER_MEMORY:-1g}
+      SPARK_EXECUTOR_MEMORY: ${SPARK_EXECUTOR_MEMORY:-2g}
+    # JupyterLab pour explorer ; c'est aussi depuis ce conteneur qu'on lance spark-submit
+    # (le "driver" du job tourne ici, les calculs tournent sur le worker).
+    command: >
+      jupyter lab --ip 0.0.0.0 --port 8888 --no-browser --allow-root
+      --ServerApp.token='' --ServerApp.root_dir=/opt/project
+    ports:
+      - "8888:8888"   # JupyterLab : http://localhost:8888
+      - "4040:4040"   # UI du job Spark en cours : http://localhost:4040
+    depends_on:
+      spark-master:
+        condition: service_healthy
+
+networks:
+  reco:
+    name: reco
