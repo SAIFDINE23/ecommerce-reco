@@ -168,6 +168,30 @@ Observations :
 | **Aucune UDF Python** | Toutes les transformations s'exécutent dans le moteur Java de Spark, 10 à 100 fois plus vite |
 | **Une seule image Docker** pour le master, le worker et le client | Driver et executors doivent avoir exactement les mêmes versions de Python et de PySpark |
 
+## Exploration des données
+
+Script : `analysis/explore.py` (lit uniquement le data lake Parquet). Résultats complets : [`docs/eda/summary.md`](docs/eda/summary.md).
+
+| Indicateur | Valeur |
+|---|---|
+| Événements / utilisateurs / produits | 109,8 M / 5,3 M / 206 876 |
+| Densité de la matrice utilisateurs × produits | **0,00513 %** (1 case sur ~20 000) |
+| Utilisateurs avec un seul événement | 21,2 % |
+| Part des achats faite par le top 1 % des produits | **62 %** |
+| Sessions contenant un achat | 6,1 % |
+
+![Événements par jour](docs/eda/daily_events.png)
+![Concentration des achats](docs/eda/popularity_concentration.png)
+![Utilisateurs par niveau d'activité](docs/eda/events_per_user.png)
+![Activité par heure](docs/eda/hourly_activity.png)
+
+**Ce que l'exploration a changé dans le projet :**
+- **Pic anormal du 14 au 17 novembre** (×3), et non au Black Friday comme supposé : l'entraînement et l'évaluation se feront sur octobre, un mois stable ; novembre servira de flux temps réel, et ce pic deviendra un test de charge.
+- **Popularité très concentrée** : la baseline « best-sellers » sera difficile à battre ; on mesurera aussi la couverture du catalogue.
+- **Matrice presque vide** : c'est le cas d'usage d'ALS (factorisation de matrice pour feedback implicite).
+- **21 % d'utilisateurs n'ont qu'un événement** : ils seront servis par la popularité et les tendances (cold start).
+- **Pic d'activité à 16h UTC**, soit 19h à Moscou : les features horaires seront calculées en heure locale (UTC+3).
+
 ## Structure du dépôt
 
 ```

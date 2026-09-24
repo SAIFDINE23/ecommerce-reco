@@ -1,0 +1,53 @@
+{
+  "events": 109819981,
+  "events_by_type": {
+    "cart": 3828438,
+    "purchase": 1659703,
+    "view": 104331840
+  },
+  "products": 206876,
+  "top_days": [
+    [
+      "2019-11-16",
+      6488921
+    ],
+    [
+      "2019-11-17",
+      6379913
+    ],
+    [
+      "2019-11-15",
+      6205340
+    ],
+    [
+      "2019-11-14",
+      3064736
+    ],
+    [
+      "2019-11-18",
+      2018957
+    ]
+  ],
+  "avg_events_per_day": {
+    "2019-10": 1368340,
+    "2019-11": 2246715
+  },
+  "users": 5316649,
+  "events_per_user": {
+    "median": 5,
+    "mean": 20.7
+  },
+  "users_single_event_pct": 21.2,
+  "users_ge5_events_pct": 53.6,
+  "users_who_bought_pct": 13.1,
+  "products_purchased": 68076,
+  "top1pct_products_share_of_purchases": 62.2,
+  "top20pct_products_share_of_purchases": 91.4,
+  "peak_hour_utc": 16,
+  "sessions": 23016650,
+  "events_per_session_median": 2,
+  "sessions_with_purchase_pct": 6.09,
+  "user_product_pairs": 56371590,
+  "matrix_density_pct": 0.00513,
+  "duration_s": 200.8
+}
