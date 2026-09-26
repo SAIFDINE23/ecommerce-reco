@@ -1,24 +1,29 @@
-"""Entraîne un modèle ALS (feedback implicite) et l'évalue sur la semaine de test.
+"""Entraîne un modèle ALS (feedback implicite), l'évalue sur la semaine de test
+et enregistre tout dans MLflow (réglages, scores, rapport, modèle).
 
-  - utilisateurs connus du modèle   -> recommandations ALS personnalisées
+  - utilisateurs connus du modèle      -> recommandations ALS personnalisées
   - utilisateurs inconnus (cold start) -> liste de popularité (repli)
 
-Exemple :
-  spark-submit spark_jobs/train_als.py --rank 32 --reg-param 0.1 --alpha 20 --max-iter 10
+Exemples :
+  spark-submit spark_jobs/train_als.py
+  spark-submit spark_jobs/train_als.py --rank 64 --alpha 40
+  spark-submit spark_jobs/train_als.py --no-log-model      # essai rapide, sans sauvegarder le modèle
 """
 import argparse
-import glob
 import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import mlflow
+import mlflow.spark
 from pyspark.ml.recommendation import ALS
 from pyspark.sql import functions as F
 
 from spark_jobs.lib.metrics import evaluate
 from spark_jobs.lib.popularity import top_popular
 from spark_jobs.lib.session import get_spark
+from spark_jobs.lib.tracking import EXPERIMENT, log_metric_groups
 
 INT_MAX = 2**31 - 1  # ALS de Spark exige des identifiants entiers sur 32 bits
 
@@ -29,104 +34,117 @@ def main():
     p.add_argument("--train", default="data/lake/interactions/train_filtered")
     p.add_argument("--truth", default="data/lake/eval/test_truth")
     p.add_argument("--rank", type=int, default=32, help="Taille des vecteurs de goûts")
-    p.add_argument("--reg-param", type=float, default=0.1, help="Régularisation (anti par cœur)")
-    p.add_argument("--alpha", type=float, default=20.0, help="Poids de la confiance")
-    p.add_argument("--max-iter", type=int, default=10, help="Nombre d'alternances")
+    p.add_argument("--reg-param", type=float, default=0.1, help="Régularisation (le frein)")
+    p.add_argument("--alpha", type=float, default=20.0, help="Poids des clics face aux cases vides")
+    p.add_argument("--max-iter", type=int, default=10, help="Nombre d'allers-retours")
     p.add_argument("--k", type=int, default=10)
     p.add_argument("--pop-start", default="2019-10-18")
     p.add_argument("--pop-end", default="2019-10-24")
-    p.add_argument("--model-dir", default="data/models/als")
+    p.add_argument("--experiment", default=EXPERIMENT)
+    p.add_argument("--run-name", default=None)
+    p.add_argument("--log-model", action=argparse.BooleanOptionalAction, default=True,
+                   help="Sauvegarder le modèle dans MLflow (--no-log-model pour un essai rapide)")
     p.add_argument("--report-dir", default="reports/eval")
     args = p.parse_args()
 
     t0 = time.time()
     spark = get_spark("train-als")
-    # Sauvegardes intermédiaires : évitent qu'un calcul itératif très long ne fasse planter Spark.
+    # Dossiers partagés par tous les conteneurs (le projet est monté partout au même endroit).
     spark.sparkContext.setCheckpointDir("checkpoints/als")
+    shared_tmp = str(Path("checkpoints/mlflow_tmp").resolve())
 
-    # 1) Données d'entraînement : (user_id, product_id, confidence)
-    train = spark.read.parquet(args.train).select("user_id", "product_id", "confidence")
-    mx = train.agg(F.max("user_id").alias("u"), F.max("product_id").alias("p")).first()
-    assert mx["u"] <= INT_MAX and mx["p"] <= INT_MAX, "Identifiants trop grands pour ALS"
-    train = (train.withColumn("user_id", F.col("user_id").cast("int"))
-                  .withColumn("product_id", F.col("product_id").cast("int")))
+    mlflow.set_experiment(args.experiment)
+    run_name = args.run_name or f"als_r{args.rank}_a{args.alpha:g}_l{args.reg_param:g}_i{args.max_iter}"
 
-    # 2) Entraînement
-    als = ALS(userCol="user_id", itemCol="product_id", ratingCol="confidence",
-              implicitPrefs=True, rank=args.rank, regParam=args.reg_param,
-              alpha=args.alpha, maxIter=args.max_iter, nonnegative=True,
-              coldStartStrategy="drop", seed=42)
-    t_fit = time.time()
-    model = als.fit(train)
-    fit_s = round(time.time() - t_fit, 1)
-    print(f"Entraînement terminé en {fit_s} s")
+    with mlflow.start_run(run_name=run_name) as run:
+        # 1) Les RÉGLAGES : on les note avant de commencer.
+        mlflow.set_tags({"model_type": "als", "evaluation": "test_25-31_oct"})
+        mlflow.log_params({
+            "rank": args.rank, "regParam": args.reg_param, "alpha": args.alpha,
+            "maxIter": args.max_iter, "k": args.k,
+            "implicitPrefs": True, "nonnegative": True, "seed": 42,
+            "cold_start_fallback": f"popularity_{args.pop_start}_{args.pop_end}",
+            "train_path": args.train, "truth_path": args.truth,
+        })
 
-    # 3) Recommandations ALS pour les utilisateurs du test CONNUS du modèle
-    truth = spark.read.parquet(args.truth)
-    known = truth.where("known").select(F.col("user_id").cast("int").alias("user_id"))
-    t_rec = time.time()
-    als_recs = (model.recommendForUserSubset(known, args.k)
-                .select(F.col("user_id").cast("bigint").alias("user_id"),
-                        F.col("recommendations.product_id").cast("array<bigint>").alias("recs")))
-    als_recs = als_recs.cache()
-    n_als = als_recs.count()
-    rec_s = round(time.time() - t_rec, 1)
+        # 2) Données d'entraînement : (user_id, product_id, confidence)
+        train = spark.read.parquet(args.train).select("user_id", "product_id", "confidence")
+        mx = train.agg(F.max("user_id").alias("u"), F.max("product_id").alias("p")).first()
+        assert mx["u"] <= INT_MAX and mx["p"] <= INT_MAX, "Identifiants trop grands pour ALS"
+        train = (train.withColumn("user_id", F.col("user_id").cast("int"))
+                      .withColumn("product_id", F.col("product_id").cast("int")))
 
-    # 4) Repli popularité pour les utilisateurs INCONNUS du modèle
-    top_ids = top_popular(spark.read.parquet(args.lake), args.pop_start, args.pop_end, args.k)
-    pop_array = F.array(*[F.lit(pid).cast("bigint") for pid in top_ids])
-    cold_recs = truth.where("not known").select("user_id").withColumn("recs", pop_array)
-    hybrid_recs = als_recs.unionByName(cold_recs)
+        # 3) Entraînement
+        als = ALS(userCol="user_id", itemCol="product_id", ratingCol="confidence",
+                  implicitPrefs=True, rank=args.rank, regParam=args.reg_param,
+                  alpha=args.alpha, maxIter=args.max_iter, nonnegative=True,
+                  coldStartStrategy="drop", seed=42)
+        t_fit = time.time()
+        model = als.fit(train)
+        fit_s = round(time.time() - t_fit, 1)
+        print(f"Entraînement terminé en {fit_s} s")
 
-    catalog_size = spark.read.parquet(args.train).select("product_id").distinct().count()
+        # 4) Recommandations ALS pour les utilisateurs du test CONNUS du modèle
+        truth = spark.read.parquet(args.truth)
+        known = truth.where("known").select(F.col("user_id").cast("int").alias("user_id"))
+        t_rec = time.time()
+        als_recs = (model.recommendForUserSubset(known, args.k)
+                    .select(F.col("user_id").cast("bigint").alias("user_id"),
+                            F.col("recommendations.product_id").cast("array<bigint>").alias("recs")))
+        als_recs = als_recs.cache()
+        n_als = als_recs.count()
+        rec_s = round(time.time() - t_rec, 1)
 
-    # 5) Évaluation
-    metrics = {
-        "als_on_known_users": evaluate(als_recs, truth.where("known"), args.k, catalog_size),
-        "hybrid_all_users": evaluate(hybrid_recs, truth, args.k, catalog_size),
-    }
+        # 5) Repli popularité pour les utilisateurs INCONNUS du modèle
+        top_ids = top_popular(spark.read.parquet(args.lake), args.pop_start, args.pop_end, args.k)
+        pop_array = F.array(*[F.lit(pid).cast("bigint") for pid in top_ids])
+        cold_recs = truth.where("not known").select("user_id").withColumn("recs", pop_array)
+        hybrid_recs = als_recs.unionByName(cold_recs)
 
-    # 6) Sauvegarde du modèle (les vecteurs appris) et du rapport
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    model_path = f"{args.model_dir}/{stamp}"
-    model.write().overwrite().save(model_path)
+        catalog_size = spark.read.parquet(args.train).select("product_id").distinct().count()
 
-    report = {
-        "run_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "model": "als",
-        "params": {"rank": args.rank, "regParam": args.reg_param, "alpha": args.alpha,
-                   "maxIter": args.max_iter, "k": args.k},
-        "model_path": model_path,
-        "users_with_als_recs": n_als,
-        "metrics": metrics,
-        "fit_s": fit_s,
-        "recommend_s": rec_s,
-        "duration_s": round(time.time() - t0, 1),
-    }
-
-    # Comparaison avec le dernier rapport de la baseline de popularité, s'il existe.
-    baselines = sorted(glob.glob(f"{args.report_dir}/baseline_popularity_*.json"))
-    if baselines:
-        base = json.loads(Path(baselines[-1]).read_text())["metrics"]
-        k = args.k
-        report["vs_popularity"] = {
-            f"known_users_recall@{k}": [base["known_users"][f"recall@{k}"],
-                                        metrics["als_on_known_users"][f"recall@{k}"]],
-            f"known_users_ndcg@{k}": [base["known_users"][f"ndcg@{k}"],
-                                      metrics["als_on_known_users"][f"ndcg@{k}"]],
-            f"all_users_recall@{k}": [base["all_users"][f"recall@{k}"],
-                                      metrics["hybrid_all_users"][f"recall@{k}"]],
-            "coverage": [base["all_users"]["coverage"], metrics["hybrid_all_users"]["coverage"]],
+        # 6) Les SCORES
+        metrics = {
+            "known": evaluate(als_recs, truth.where("known"), args.k, catalog_size),
+            "all": evaluate(hybrid_recs, truth, args.k, catalog_size),
         }
+        log_metric_groups(metrics)
+        mlflow.log_metrics({"fit_s": fit_s, "recommend_s": rec_s, "catalog_size": catalog_size})
 
-    out = Path(args.report_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    (out / f"als_{stamp}.json").write_text(json.dumps(report, indent=2))
-    print(json.dumps(report, indent=2))
+        # 7) Le MODÈLE : rangé dans MLflow (plus besoin de data/models/).
+        model_uri = None
+        if args.log_model:
+            info = mlflow.spark.log_model(
+                model, artifact_path="als_model",
+                dfs_tmpdir=shared_tmp,                 # dossier temporaire visible par le worker
+                pip_requirements=["pyspark==3.5.3"],   # évite une détection automatique lente
+            )
+            model_uri = info.model_uri
 
-    print("\nExemple : recommandations ALS pour 3 utilisateurs, et ce qu'ils ont vraiment fait")
-    (als_recs.join(truth.select("user_id", "truth"), "user_id")
-             .orderBy("user_id").show(3, truncate=110))
+        # 8) Le RAPPORT : aussi en JSON dans reports/ (lisible sans MLflow)
+        duration_s = round(time.time() - t0, 1)
+        mlflow.log_metric("duration_s", duration_s)
+        report = {
+            "run_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "model": "als",
+            "mlflow_run_id": run.info.run_id,
+            "model_uri": model_uri,
+            "params": {"rank": args.rank, "regParam": args.reg_param, "alpha": args.alpha,
+                       "maxIter": args.max_iter, "k": args.k},
+            "users_with_als_recs": n_als,
+            "metrics": metrics,
+            "fit_s": fit_s, "recommend_s": rec_s, "duration_s": duration_s,
+        }
+        mlflow.log_dict(report, "report.json")
+
+        out = Path(args.report_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        (out / f"als_{stamp}.json").write_text(json.dumps(report, indent=2))
+        print(json.dumps(report, indent=2))
+        print(f"\nRun MLflow : http://localhost:5000/#/experiments/"
+              f"{run.info.experiment_id}/runs/{run.info.run_id}")
+
     spark.stop()
 
 
