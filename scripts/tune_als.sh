@@ -19,6 +19,8 @@ CONFIGS=(
   "16    20     0.1"
   "64    20     0.1"
 )
+# Réglages passés en ligne de commande ? Ils remplacent la liste ci-dessus.
+if [ "$#" -gt 0 ]; then CONFIGS=("$@"); fi
 
 mkdir -p reports/tuning
 LOG="reports/tuning/tune_als_$(date -u +%Y%m%dT%H%M%SZ).log"
