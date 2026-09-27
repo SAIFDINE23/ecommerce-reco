@@ -1,13 +1,14 @@
-"""Entraîne un modèle ALS (feedback implicite), l'évalue sur la semaine de test
-et enregistre tout dans MLflow (réglages, scores, rapport, modèle).
+"""Entraîne un modèle ALS (feedback implicite), l'évalue sur la semaine de validation
+(--split val) ou de test (--split test) et enregistre tout dans MLflow.
 
   - utilisateurs connus du modèle      -> recommandations ALS personnalisées
   - utilisateurs inconnus (cold start) -> liste de popularité (repli)
 
 Exemples :
-  spark-submit spark_jobs/train_als.py
-  spark-submit spark_jobs/train_als.py --rank 64 --alpha 40
-  spark-submit spark_jobs/train_als.py --no-log-model      # essai rapide, sans sauvegarder le modèle
+  spark-submit spark_jobs/train_als.py --split val                # réglage (1-17 oct. -> 18-24 oct.)
+  spark-submit spark_jobs/train_als.py --split val --rank 64 --alpha 40
+  spark-submit spark_jobs/train_als.py --split test               # note finale (1-24 -> 25-31 oct.)
+  spark-submit spark_jobs/train_als.py --split val --no-log-model # essai sans sauvegarder le modèle
 """
 import argparse
 import json
@@ -23,6 +24,7 @@ from pyspark.sql import functions as F
 from spark_jobs.lib.metrics import evaluate
 from spark_jobs.lib.popularity import top_popular
 from spark_jobs.lib.session import get_spark
+from spark_jobs.lib.splits import SPLITS, resolve_split
 from spark_jobs.lib.tracking import EXPERIMENT, log_metric_groups
 
 INT_MAX = 2**31 - 1  # ALS de Spark exige des identifiants entiers sur 32 bits
@@ -31,21 +33,24 @@ INT_MAX = 2**31 - 1  # ALS de Spark exige des identifiants entiers sur 32 bits
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--lake", default="data/lake/events")
-    p.add_argument("--train", default="data/lake/interactions/train_filtered")
-    p.add_argument("--truth", default="data/lake/eval/test_truth")
+    p.add_argument("--split", choices=sorted(SPLITS), default="test",
+                   help="val = régler les paramètres, test = note finale")
+    p.add_argument("--train", default=None, help="Par défaut : celui du --split")
+    p.add_argument("--truth", default=None, help="Par défaut : celui du --split")
     p.add_argument("--rank", type=int, default=32, help="Taille des vecteurs de goûts")
     p.add_argument("--reg-param", type=float, default=0.1, help="Régularisation (le frein)")
     p.add_argument("--alpha", type=float, default=20.0, help="Poids des clics face aux cases vides")
     p.add_argument("--max-iter", type=int, default=10, help="Nombre d'allers-retours")
     p.add_argument("--k", type=int, default=10)
-    p.add_argument("--pop-start", default="2019-10-18")
-    p.add_argument("--pop-end", default="2019-10-24")
+    p.add_argument("--pop-start", default=None, help="Par défaut : celui du --split")
+    p.add_argument("--pop-end", default=None, help="Par défaut : celui du --split")
     p.add_argument("--experiment", default=EXPERIMENT)
     p.add_argument("--run-name", default=None)
     p.add_argument("--log-model", action=argparse.BooleanOptionalAction, default=True,
                    help="Sauvegarder le modèle dans MLflow (--no-log-model pour un essai rapide)")
     p.add_argument("--report-dir", default="reports/eval")
     args = p.parse_args()
+    resolve_split(args)
 
     t0 = time.time()
     spark = get_spark("train-als")
@@ -54,14 +59,14 @@ def main():
     shared_tmp = str(Path("checkpoints/mlflow_tmp").resolve())
 
     mlflow.set_experiment(args.experiment)
-    run_name = args.run_name or f"als_r{args.rank}_a{args.alpha:g}_l{args.reg_param:g}_i{args.max_iter}"
+    run_name = args.run_name or f"{args.split}_als_r{args.rank}_a{args.alpha:g}_l{args.reg_param:g}_i{args.max_iter}"
 
     with mlflow.start_run(run_name=run_name) as run:
         # 1) Les RÉGLAGES : on les note avant de commencer.
-        mlflow.set_tags({"model_type": "als", "evaluation": "test_25-31_oct"})
+        mlflow.set_tags({"model_type": "als", "split": args.split})
         mlflow.log_params({
             "rank": args.rank, "regParam": args.reg_param, "alpha": args.alpha,
-            "maxIter": args.max_iter, "k": args.k,
+            "maxIter": args.max_iter, "k": args.k, "split": args.split,
             "implicitPrefs": True, "nonnegative": True, "seed": 42,
             "cold_start_fallback": f"popularity_{args.pop_start}_{args.pop_end}",
             "train_path": args.train, "truth_path": args.truth,
@@ -127,6 +132,7 @@ def main():
         report = {
             "run_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "model": "als",
+            "split": args.split,
             "mlflow_run_id": run.info.run_id,
             "model_uri": model_uri,
             "params": {"rank": args.rank, "regParam": args.reg_param, "alpha": args.alpha,
@@ -140,7 +146,7 @@ def main():
         out = Path(args.report_dir)
         out.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        (out / f"als_{stamp}.json").write_text(json.dumps(report, indent=2))
+        (out / f"als_{args.split}_{stamp}.json").write_text(json.dumps(report, indent=2))
         print(json.dumps(report, indent=2))
         print(f"\nRun MLflow : http://localhost:5000/#/experiments/"
               f"{run.info.experiment_id}/runs/{run.info.run_id}")

@@ -7,8 +7,9 @@ il ne sert à rien.
 Les scores sont aussi envoyés dans MLflow (même expérience et mêmes noms
 de métriques que ALS), pour comparer les deux modèles dans l'interface.
 
-Exemple :
-  spark-submit spark_jobs/baseline_popularity.py --pop-start 2019-10-18 --pop-end 2019-10-24
+Exemples :
+  spark-submit spark_jobs/baseline_popularity.py --split val     # 11-17 oct. -> évaluée sur 18-24 oct.
+  spark-submit spark_jobs/baseline_popularity.py --split test    # 18-24 oct. -> évaluée sur 25-31 oct.
 """
 import argparse
 import json
@@ -21,7 +22,7 @@ from pyspark.sql import functions as F
 
 from spark_jobs.lib.metrics import evaluate
 from spark_jobs.lib.session import get_spark
-from spark_jobs.lib.splits import TARGET_EVENTS
+from spark_jobs.lib.splits import SPLITS, TARGET_EVENTS, resolve_split
 from spark_jobs.lib.tracking import EXPERIMENT, log_metric_groups
 from spark_jobs.lib.transforms import filter_dates
 
@@ -29,14 +30,17 @@ from spark_jobs.lib.transforms import filter_dates
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--lake", default="data/lake/events")
-    p.add_argument("--train", default="data/lake/interactions/train_filtered")
-    p.add_argument("--truth", default="data/lake/eval/test_truth")
-    p.add_argument("--pop-start", default="2019-10-18", help="Début de la fenêtre de popularité")
-    p.add_argument("--pop-end", default="2019-10-24", help="Fin (= dernier jour d'entraînement)")
+    p.add_argument("--split", choices=sorted(SPLITS), default="test",
+                   help="val = période de réglage, test = note finale")
+    p.add_argument("--train", default=None, help="Par défaut : celui du --split")
+    p.add_argument("--truth", default=None, help="Par défaut : celui du --split")
+    p.add_argument("--pop-start", default=None, help="Début de la fenêtre de popularité")
+    p.add_argument("--pop-end", default=None, help="Fin (= dernier jour d'entraînement)")
     p.add_argument("--k", type=int, default=10)
     p.add_argument("--report-dir", default="reports/eval")
     p.add_argument("--experiment", default=EXPERIMENT)
     args = p.parse_args()
+    resolve_split(args)
 
     t0 = time.time()
     spark = get_spark("baseline-popularity")
@@ -65,15 +69,17 @@ def main():
 
     # 4) MLflow : un run « popularity » dans la même expérience que ALS.
     mlflow.set_experiment(args.experiment)
-    with mlflow.start_run(run_name=f"popularity_{args.pop_start}_{args.pop_end}"):
-        mlflow.set_tags({"model_type": "popularity", "evaluation": "test_25-31_oct"})
-        mlflow.log_params({"pop_start": args.pop_start, "pop_end": args.pop_end, "k": args.k})
+    with mlflow.start_run(run_name=f"{args.split}_popularity_{args.pop_start}_{args.pop_end}"):
+        mlflow.set_tags({"model_type": "popularity", "split": args.split})
+        mlflow.log_params({"pop_start": args.pop_start, "pop_end": args.pop_end, "k": args.k,
+                           "split": args.split})
         log_metric_groups(results)
         mlflow.log_dict({"top_products": top_ids}, "top_products.json")
 
     report = {
         "run_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "model": "popularity",
+        "split": args.split,
         "popularity_window": [args.pop_start, args.pop_end],
         "top_products": [{"product_id": r["product_id"], "carts_purchases": r["count"]} for r in top],
         "metrics": results,
@@ -82,7 +88,7 @@ def main():
     out = Path(args.report_dir)
     out.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    (out / f"baseline_popularity_{stamp}.json").write_text(json.dumps(report, indent=2))
+    (out / f"baseline_popularity_{args.split}_{stamp}.json").write_text(json.dumps(report, indent=2))
     print(json.dumps(report, indent=2))
     spark.stop()
 

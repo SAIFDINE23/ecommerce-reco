@@ -5,6 +5,27 @@ from pyspark.sql import functions as F
 # Ce qu'on cherche à prédire : un ajout au panier ou un achat (pas une simple vue).
 TARGET_EVENTS = ("cart", "purchase")
 
+# Les deux découpages temporels du projet (même recette, décalée d'une semaine) :
+#   val  : pour RÉGLER les paramètres  -> entraînement 1-17 oct., validation 18-24 oct.
+#   test : pour la NOTE FINALE (1 fois) -> entraînement 1-24 oct., test       25-31 oct.
+# pop_start / pop_end : la semaine de popularité juste avant la période évaluée.
+SPLITS = {
+    "val": {"train": "data/lake/interactions/val_train_filtered",
+            "truth": "data/lake/eval/val_truth",
+            "pop_start": "2019-10-11", "pop_end": "2019-10-17"},
+    "test": {"train": "data/lake/interactions/train_filtered",
+             "truth": "data/lake/eval/test_truth",
+             "pop_start": "2019-10-18", "pop_end": "2019-10-24"},
+}
+
+
+def resolve_split(args) -> None:
+    """Complète args.train / args.truth / args.pop_start / args.pop_end avec le preset de args.split
+    (sauf si on les a donnés explicitement en ligne de commande)."""
+    for key, value in SPLITS[args.split].items():
+        if getattr(args, key) is None:
+            setattr(args, key, value)
+
 
 def filter_interactions(inter: DataFrame, min_user_events: int = 5,
                         min_item_events: int = 10) -> DataFrame:
