@@ -1,6 +1,6 @@
 # Cluster Spark (1 master + 1 worker) + un conteneur client (Jupyter / spark-submit)
-# + un serveur MLflow (suivi des entraînements).
-# Kafka, Airflow, Redis et l'API seront ajoutés dans les étapes suivantes.
+# + un serveur MLflow (suivi des entraînements) + un broker Kafka (flux de clics temps réel).
+# Airflow, Redis et l'API seront ajoutés dans les étapes suivantes.
 # Les tailles mémoire/CPU viennent du fichier .env (voir .env.example).
 
 x-spark-common: &spark-common
@@ -90,6 +90,38 @@ services:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/health')\""]
       interval: 10s
       timeout: 5s
+      retries: 12
+
+  kafka:
+    image: apache/kafka:3.9.0
+    container_name: kafka
+    hostname: kafka
+    # Mode KRaft : un seul conteneur joue à la fois le rôle de "broker" (stocke les messages)
+    # et de "controller" (gère le cluster). Plus besoin de ZooKeeper.
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092     # l'adresse donnée aux clients (réseau Docker)
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      # Un seul broker : chaque donnée interne n'a qu'une copie (en production : 3).
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3                   # partitions par défaut d'un nouveau topic
+      KAFKA_LOG_RETENTION_HOURS: 168            # on garde les messages 7 jours
+      KAFKA_HEAP_OPTS: -Xmx512m                 # 512 Mo max : suffisant ici, et la RAM de WSL est comptée
+    # Pas de volume : les messages survivent à un "stop/start", mais pas à un "down".
+    # Pas grave ici : on peut toujours rejouer novembre depuis le data lake.
+    networks: [reco]
+    healthcheck:
+      # Petit outil Kafka qui interroge le broker (lancé avec peu de mémoire pour ne pas gêner).
+      test: ["CMD-SHELL", "KAFKA_HEAP_OPTS=-Xmx64m /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
       retries: 12
 
 networks:
