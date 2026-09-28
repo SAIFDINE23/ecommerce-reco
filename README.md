@@ -213,3 +213,31 @@ ecommerce-reco/
 ├── data/                       (non versionné) raw/, lake/, quarantine/
 └── reports/                    (non versionné) rapports d'ingestion
 ```
+
+
+### Semaine 3 — MLflow : suivi, réglage et Model Registry
+
+**Méthode.** Trois périodes temporelles pour ne jamais régler sur le test :
+entraînement 1–17 oct. → **validation** 18–24 oct. (réglage) ;
+entraînement 1–24 oct. → **test** 25–31 oct. (évalué une seule fois).
+Chaque entraînement est tracé dans MLflow (paramètres, métriques, commit git, modèle).
+
+**Réglage (validation, 13 runs, méthode « un paramètre à la fois » puis combinaison)**
+
+| Paramètre | Valeurs testées | Effet observé |
+|---|---|---|
+| alpha | 1, 2, 5, 10, 20, 40, 80 | optimum à 5 ; à 80 le modèle devient pire que la popularité (cases vides ignorées) |
+| regParam | 0,01 / 0,1 / 1,0 | 0,01 = surapprentissage (−16 %) ; plateau entre 0,1 et 1,0 |
+| rank | 16 / 32 / 64 | 64 meilleur (+6 % vs 32) et couverture ×2, mais entraînement ×3,4 |
+
+**Résultat final (test, 67 862 utilisateurs connus, K = 10)**
+
+| Modèle | recall@10 | ndcg@10 |
+|---|---|---|
+| Popularité | 0,1605 | 0,0914 |
+| ALS initial (rank 32, α 20) | 0,2416 | 0,1518 |
+| **ALS réglé (rank 64, α 5, λ 0,1)** | **0,2533 (+58 %)** | **0,1709 (+87 %)** |
+
+Le modèle retenu est enregistré dans le **Model Registry MLflow** (`als-recommender`, alias `@champion`)
+et se charge via `models:/als-recommender@champion`.
+Option légère : rank 32 / α 5 → 24,5 % sur validation en 4,5 min d'entraînement (contre 19 min).
