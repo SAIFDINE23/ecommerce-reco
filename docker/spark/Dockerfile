@@ -22,7 +22,11 @@ ENV JAVA_HOME=/opt/java \
     SPARK_CONF_DIR=/opt/project/conf/spark
 
 COPY docker/spark/requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+RUN pip install --no-cache-dir --timeout 60 --retries 10 -r /tmp/requirements.txt
+# Librairies ajoutées en cours de projet, dans une COUCHE SÉPARÉE : les modifier ne refait
+# que cette petite étape, sans re-télécharger pyspark (317 Mo) de la couche du dessus.
+COPY docker/spark/requirements-extra.txt /tmp/requirements-extra.txt
+RUN pip install --no-cache-dir --timeout 60 --retries 10 -r /tmp/requirements-extra.txt
 
 WORKDIR /opt/project
 ENTRYPOINT ["/usr/bin/tini", "--"]
