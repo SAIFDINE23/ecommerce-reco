@@ -1,6 +1,7 @@
 # Cluster Spark (1 master + 1 worker) + un conteneur client (Jupyter / spark-submit)
-# + un serveur MLflow (suivi des entraînements) + un broker Kafka (flux de clics temps réel).
-# Airflow, Redis et l'API seront ajoutés dans les étapes suivantes.
+# + un serveur MLflow (suivi des entraînements) + un broker Kafka (flux de clics temps réel)
+# + Redis (fiches de session en mémoire, lues en quelques millisecondes).
+# Airflow et l'API seront ajoutés dans les étapes suivantes.
 # Les tailles mémoire/CPU viennent du fichier .env (voir .env.example).
 
 x-spark-common: &spark-common
@@ -123,6 +124,22 @@ services:
       interval: 15s
       timeout: 10s
       retries: 12
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: redis
+    hostname: redis
+    # --save "" --appendonly no : pas de sauvegarde sur disque. Tout ce que Redis contient se
+    #   reconstruit (sessions en direct depuis Kafka, candidats recalculés chaque nuit).
+    # --maxmemory 512mb + volatile-lru : au-delà de 512 Mo, Redis supprime les fiches
+    #   les moins récemment utilisées plutôt que de planter.
+    command: redis-server --save "" --appendonly no --maxmemory 512mb --maxmemory-policy volatile-lru
+    networks: [reco]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 networks:
   reco:

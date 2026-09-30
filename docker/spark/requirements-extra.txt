@@ -1,2 +1,3 @@
 # Librairies ajoutées en cours de projet (couche Docker séparée : pas de re-téléchargement de pyspark)
 confluent-kafka==2.15.1
+redis==5.2.1
