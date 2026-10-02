@@ -1,7 +1,8 @@
 # Cluster Spark (1 master + 1 worker) + un conteneur client (Jupyter / spark-submit)
 # + un serveur MLflow (suivi des entraînements) + un broker Kafka (flux de clics temps réel)
-# + Redis (fiches de session en mémoire, lues en quelques millisecondes).
-# Airflow et l'API seront ajoutés dans les étapes suivantes.
+# + Redis (fiches de session en mémoire, lues en quelques millisecondes)
+# + Airflow (chef d'orchestre : lance les jobs Spark à l'heure prévue, dans le bon ordre).
+# L'API sera ajoutée dans une étape suivante.
 # Les tailles mémoire/CPU viennent du fichier .env (voir .env.example).
 
 x-spark-common: &spark-common
@@ -139,6 +140,44 @@ services:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
+      retries: 5
+
+  airflow:
+    image: apache/airflow:3.1.8-python3.11
+    container_name: airflow
+    hostname: airflow
+    # "standalone" = toutes les pièces d'Airflow dans UN conteneur (interface, planificateur,
+    # exécution des tâches) + base SQLite. Parfait pour un projet sur un seul PC.
+    command: standalone
+    # root UNIQUEMENT pour pouvoir utiliser le socket Docker (piloter spark-client).
+    # Acceptable en local, jamais en production.
+    user: "0:0"
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"                  # pas les 50 DAGs d'exemple
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "False"    # nos DAGs sont actifs dès leur apparition
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "True"  # pas de mot de passe (local uniquement)
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/state/airflow.db
+      AIRFLOW__LOGGING__BASE_LOG_FOLDER: /opt/airflow/state/logs
+      REDIS_URL: redis://redis:6379/0
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags                     # nos DAGs (modifiables à chaud)
+      - ./data/airflow:/opt/airflow/state                    # base + journaux : survivent au redémarrage
+      - /var/run/docker.sock:/var/run/docker.sock            # la "télécommande" Docker
+    ports:
+      - "8080:8080"   # interface Airflow : http://localhost:8080
+    networks: [reco]
+    depends_on:
+      redis:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
       retries: 5
 
 networks:

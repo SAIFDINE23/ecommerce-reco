@@ -28,3 +28,5 @@ kaggle.json
 .DS_Store
 
 .ivy2/
+
+data/airflow/
