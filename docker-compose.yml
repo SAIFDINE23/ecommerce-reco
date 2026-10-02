@@ -161,6 +161,9 @@ services:
       AIRFLOW__LOGGING__BASE_LOG_FOLDER: /opt/airflow/state/logs
       REDIS_URL: redis://redis:6379/0
       MLFLOW_TRACKING_URI: http://mlflow:5000
+      # Airflow est installé dans /home/airflow/.local : on le dit à Python pour que
+      # "docker compose exec airflow airflow ..." fonctionne aussi en root.
+      PYTHONUSERBASE: /home/airflow/.local
     volumes:
       - ./airflow/dags:/opt/airflow/dags                     # nos DAGs (modifiables à chaud)
       - ./data/airflow:/opt/airflow/state                    # base + journaux : survivent au redémarrage
