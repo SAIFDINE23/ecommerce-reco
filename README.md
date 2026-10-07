@@ -10,6 +10,7 @@ cycle de vie des modèles est géré par **MLflow**.
 
 **Stack :** Apache Spark 3.5 · Kafka · Airflow · MLflow · Redis · FastAPI · Docker · Parquet
 
+
 ---
 
 ## Sommaire
